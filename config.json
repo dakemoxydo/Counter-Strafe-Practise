@@ -1,0 +1,25 @@
+{
+  "movement_keys": {
+    "forward": "W",
+    "backward": "S",
+    "left": "A",
+    "right": "D"
+  },
+  "thresholds": {
+    "max_shot_delay": 230.0,
+    "min_shot_delay": 0.0,
+    "max_cs_time": 215.0,
+    "micro_tap_threshold": 80.0
+  },
+  "hotkeys": {
+    "toggle_visibility": "F6",
+    "exit": "F8",
+    "increase_size": "=",
+    "decrease_size": "-"
+  },
+  "overlay": {
+    "position_x": 1154,
+    "position_y": 297,
+    "font_size": 10
+  }
+}
