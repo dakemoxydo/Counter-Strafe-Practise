@@ -5,6 +5,7 @@ from pathlib import Path
 from typing import List
 
 from classifier import LABEL_COUNTER_STRAFE, ShotClassification
+from constants import MAX_RECENT_HISTORY
 
 logger = logging.getLogger(__name__)
 
@@ -17,7 +18,7 @@ class SessionStatsData:
     total_counter_strafes: int = 0
     total_cs_time: float = 0.0
     total_shot_delay: float = 0.0
-    recent_history: List[str] = None  # Store last 20 labels
+    recent_history: List[str] | None = None  # Store last 20 labels
 
     def __post_init__(self):
         if self.recent_history is None:
@@ -34,8 +35,10 @@ class StatisticsManager:
     def record_shot(self, classification: ShotClassification) -> None:
         self.data.total_shots += 1
 
+        if self.data.recent_history is None:
+            self.data.recent_history = []
         self.data.recent_history.append(classification.label)
-        if len(self.data.recent_history) > 20:
+        if len(self.data.recent_history) > MAX_RECENT_HISTORY:
             self.data.recent_history.pop(0)
 
         if classification.label == LABEL_COUNTER_STRAFE:
@@ -77,12 +80,12 @@ class StatisticsManager:
                 loaded = json.load(f)
                 self.data = SessionStatsData(**loaded)
         except Exception as e:
-            logger.warning(f"Could not load stats.json: {e}")
+            logger.warning("Could not load stats.json: %s", e)
 
     def save(self) -> None:
         try:
             with open(STAT_FILE, "w", encoding="utf-8") as f:
                 json.dump(asdict(self.data), f, indent=4)
         except Exception as e:
-            logger.warning(f"Could not save stats.json: {e}")
+            logger.warning("Could not save stats.json: %s", e)
 

@@ -1,0 +1,15 @@
+__pycache__/
+*.pyc
+*.pyo
+.pytest_cache/
+*.egg-info/
+.eggs/
+dist/
+build/
+stats.json
+cStrafe-UI-minimal-main/
+*.txt
+output.txt
+test_output.txt
+test_output2.txt
+debug.py

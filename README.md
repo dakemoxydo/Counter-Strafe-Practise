@@ -1,4 +1,4 @@
-# cStrafe UI by dakemoxydo
+# Counter Strafe Practise by dakemoxydo
 
 This is the second project in this domain. I made this so it could be more simplified and not too confusing like the previous version.This is a lightweight training tool to help players practice  counterstrafing mechanics in CS2. It listens to your movement keys (W, A, S and D) and the left mouse button to decide whether you fired while coming to a full stop, started moving the other way or were still overlapping directions.
 

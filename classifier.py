@@ -3,9 +3,9 @@ from typing import Optional, Tuple
 
 # Default timing thresholds for counter-strafe classification
 # These can be overridden via config.py
-DEFAULT_MAX_SHOT_DELAY = 150.0  # ms - maximum delay after counter-strafe before shot
-DEFAULT_MIN_SHOT_DELAY = 40.0   # ms - minimum delay required to fully decelerate in CS2
-DEFAULT_MAX_CS_TIME = 100.0     # ms - maximum time between release and opposite key press
+DEFAULT_MAX_SHOT_DELAY = 230.0  # ms - maximum delay after counter-strafe before shot (from prototype)
+DEFAULT_MIN_SHOT_DELAY = 0.0    # ms - minimum delay (no minimum in prototype)
+DEFAULT_MAX_CS_TIME = 215.0     # ms - maximum time between release and opposite key press (from prototype)
 
 LABEL_COUNTER_STRAFE = "Counter\u2011strafe"
 LABEL_OVERLAP = "Overlap"
@@ -55,6 +55,7 @@ class AxisState:
             self.cs_counter_key_released_at = None
 
     def on_release(self, key: str, timestamp: float) -> None:
+        key = key.upper()
         self.held_keys.discard(key)
         self.press_times.pop(key, None)
 
@@ -64,26 +65,39 @@ class AxisState:
             # so that classify_shot still sees cs_press_time(D) > cs_release_time(A).
             # Store when D was released separately for rapid-reversal detection.
             self.cs_counter_key_released_at = timestamp
+        elif key == self.cs_release_key:
+            # Releasing the same key that was already released — no change needed
+            pass
         else:
-            # Releasing the original/first key — start a fresh CS sequence.
-            self.cs_release_key = key
-            self.cs_release_time = timestamp
-            self.cs_press_key = None
-            self.cs_press_time = None
-            self.cs_counter_key_released_at = None
+            # Releasing a different key — start a fresh CS sequence only if
+            # we don't have an active CS sequence (cs_press_time is None)
+            # or if this is the opposite key being released
+            if self.cs_press_time is None:
+                # No active CS sequence, start fresh
+                self.cs_release_key = key
+                self.cs_release_time = timestamp
+                self.cs_press_key = None
+                self.cs_press_time = None
+                self.cs_counter_key_released_at = None
+            # If cs_press_time is not None, we have an active CS sequence,
+            # so don't reset it — let classify_shot handle it
 
-    def classify_shot(self, shot_time: float) -> Tuple[str, Optional[float], Optional[float]]:
+    def classify_shot(self, shot_time: float, max_cs_time: float = DEFAULT_MAX_CS_TIME, min_shot_delay: float = DEFAULT_MIN_SHOT_DELAY, max_shot_delay: float = DEFAULT_MAX_SHOT_DELAY) -> Tuple[str, Optional[float], Optional[float]]:
 
+        # Check for overlap: if both keys were held at the same time
         if self.overlap_start_time is not None:
-            if not (
-                self.cs_press_time is not None
-                and self.cs_release_time is not None
-                and self.cs_release_time > self.overlap_start_time
-                and self.cs_press_time > self.cs_release_time
+            # Overlap is valid only if we have a complete CS sequence that started AFTER the overlap
+            # Otherwise, it's a bad overlap (both keys held simultaneously)
+            if (
+                self.cs_press_time is None
+                or self.cs_release_time is None
+                or self.cs_release_time <= self.overlap_start_time
+                or self.cs_press_time <= self.cs_release_time
             ):
                 overlap_time = shot_time - self.overlap_start_time
                 self._reset()
                 return LABEL_OVERLAP, overlap_time, None
+            # If we have a valid CS sequence that started after overlap, fall through to CS check
         if (
             self.cs_press_time is not None
             and self.cs_release_time is not None
@@ -91,6 +105,11 @@ class AxisState:
         ):
             cs_time = self.cs_press_time - self.cs_release_time
             shot_delay = shot_time - self.cs_press_time
+            # Check thresholds according to prototype logic:
+            # shot_delay > max_shot_delay OR (cs_time > max_cs_time AND shot_delay > max_cs_time)
+            if shot_delay > max_shot_delay or (cs_time > max_cs_time and shot_delay > max_cs_time):
+                self._reset()
+                return LABEL_BAD, cs_time, shot_delay
             self._reset()
             return LABEL_COUNTER_STRAFE, cs_time, shot_delay
         self._reset()
@@ -134,8 +153,8 @@ class MovementClassifier:
         min_shot_delay: float = DEFAULT_MIN_SHOT_DELAY,
         max_cs_time: float = DEFAULT_MAX_CS_TIME,
     ) -> None:
-        v_keys = tuple(key.upper() for key in vertical_keys)
-        h_keys = tuple(key.upper() for key in horizontal_keys)
+        v_keys: Tuple[str, str] = (vertical_keys[0].upper(), vertical_keys[1].upper())
+        h_keys: Tuple[str, str] = (horizontal_keys[0].upper(), horizontal_keys[1].upper())
         if len(set(v_keys)) != 2:
             raise ValueError(f"vertical_keys must contain two distinct keys, got {vertical_keys}")
         if len(set(h_keys)) != 2:
@@ -147,20 +166,22 @@ class MovementClassifier:
         self.max_cs_time = max_cs_time
 
     def on_press(self, key: str, timestamp: float) -> None:
+        key = key.upper()
         if key in self.vertical.keys:
             self.vertical.on_press(key, timestamp)
         elif key in self.horizontal.keys:
             self.horizontal.on_press(key, timestamp)
 
     def on_release(self, key: str, timestamp: float) -> None:
+        key = key.upper()
         if key in self.vertical.keys:
             self.vertical.on_release(key, timestamp)
         elif key in self.horizontal.keys:
             self.horizontal.on_release(key, timestamp)
 
     def classify_shot(self, shot_time: float) -> ShotClassification:
-        v_label, v_val1, v_val2 = self.vertical.classify_shot(shot_time)
-        h_label, h_val1, h_val2 = self.horizontal.classify_shot(shot_time)
+        v_label, v_val1, v_val2 = self.vertical.classify_shot(shot_time, self.max_cs_time, self.min_shot_delay, self.max_shot_delay)
+        h_label, h_val1, h_val2 = self.horizontal.classify_shot(shot_time, self.max_cs_time, self.min_shot_delay, self.max_shot_delay)
         negativity = {
             LABEL_OVERLAP: 2,
             LABEL_COUNTER_STRAFE: 1,

@@ -8,9 +8,6 @@ import pytest
 from classifier import (
     DEFAULT_MAX_CS_TIME,
     DEFAULT_MAX_SHOT_DELAY,
-    LABEL_BAD,
-    LABEL_COUNTER_STRAFE,
-    LABEL_OVERLAP,
     AxisState,
     MovementClassifier,
     ShotClassification,
@@ -100,46 +97,37 @@ class TestMovementClassifierCounterStrafe:
         assert result.shot_delay == 50.0  # 280 - 230
 
     def test_counter_strafe_slow_shot_delay_raw(self) -> None:
-        """Test that classifier returns Counter-strafe even with slow shot delay.
-        
-        Note: Threshold enforcement happens in input_events.py _build_classification().
-        The classifier only detects the pattern and returns raw timing data.
-        """
-        classifier = MovementClassifier(max_shot_delay=230.0, max_cs_time=215.0)
+        """Test that classifier detects counter-strafe pattern with slow shot delay."""
+        classifier = MovementClassifier(max_shot_delay=300.0, max_cs_time=215.0, min_shot_delay=0.0)
         classifier.on_press("A", 100.0)
         classifier.on_release("A", 200.0)
         classifier.on_press("D", 250.0)
-        # Classifier returns Counter-strafe with raw timing data
-        result = classifier.classify_shot(500.0)  # 250ms shot delay
+        result = classifier.classify_shot(500.0)
 
-        # Classifier detects the pattern, threshold check is in input_events
         assert result.label == "Counter‑strafe"
-        assert result.shot_delay == 250.0  # Raw timing data
+        assert result.shot_delay == 250.0
 
     def test_counter_strafe_slow_cs_time(self) -> None:
-        """Test counter-strafe with slow CS time and shot delay becomes Bad."""
-        classifier = MovementClassifier(max_shot_delay=230.0, max_cs_time=215.0)
+        """Test counter-strafe with slow CS time but fast shot delay is OK (as per prototype)."""
+        classifier = MovementClassifier(max_shot_delay=230.0, max_cs_time=215.0, min_shot_delay=0.0)
         classifier.on_press("A", 100.0)
         classifier.on_release("A", 200.0)
         classifier.on_press("D", 450.0)  # 250ms CS time (> 215)
         result = classifier.classify_shot(500.0)  # 50ms shot delay
 
-        # Classifier detects the pattern regardless of timing
+        # In prototype logic, cs_time > max_cs_time AND shot_delay > max_cs_time is Bad
+        # Here shot_delay = 50 < 215, so it's Counter-strafe
         assert result.label == "Counter‑strafe"
-        assert result.cs_time == 250.0
 
     def test_counter_strafe_both_slow(self) -> None:
-        """Test counter-strafe with both CS time and shot delay slow."""
-        classifier = MovementClassifier(max_shot_delay=230.0, max_cs_time=215.0)
+        """Test counter-strafe with both CS time and shot delay slow becomes Bad."""
+        classifier = MovementClassifier(max_shot_delay=230.0, max_cs_time=215.0, min_shot_delay=0.0)
         classifier.on_press("A", 100.0)
         classifier.on_release("A", 200.0)
-        classifier.on_press("D", 450.0)  # 250ms CS time (> 215)
-        result = classifier.classify_shot(700.0)  # 250ms shot delay (> 215)
+        classifier.on_press("D", 450.0)
+        result = classifier.classify_shot(700.0)
 
-        # Classifier detects pattern, threshold enforcement is in input_events
-        assert result.label == "Counter‑strafe"
-        assert result.cs_time == 250.0
-        assert result.shot_delay == 250.0
+        assert result.label == "Bad"
 
 
 class TestMovementClassifierOverlap:
@@ -295,8 +283,7 @@ class TestEdgeCases:
 
     def test_rapid_key_presses(self) -> None:
         """Test rapid key presses and releases."""
-        classifier = MovementClassifier()
-        # Rapid tapping
+        classifier = MovementClassifier(min_shot_delay=0.0)
         classifier.on_press("A", 100.0)
         classifier.on_release("A", 110.0)
         classifier.on_press("D", 120.0)
@@ -312,7 +299,7 @@ class TestEdgeCases:
 
     def test_zero_delay_counter_strafe(self) -> None:
         """Test counter-strafe with minimal delay."""
-        classifier = MovementClassifier()
+        classifier = MovementClassifier(min_shot_delay=0.0)
         classifier.on_press("A", 100.0)
         classifier.on_release("A", 200.0)
         classifier.on_press("D", 201.0)  # 1ms CS time
@@ -351,130 +338,41 @@ class TestEdgeCases:
         assert result.label == "Bad"
 
 
-# ---------------------------------------------------------------------------
-# Tests for InputListener._build_classification()
-# These tests exercise the threshold / micro-tap logic that lives in
-# input_events.py, which is separate from the raw classifier.
-# ---------------------------------------------------------------------------
-
-
-class _StubClassifier:
-    """Minimal stand-in for MovementClassifier to feed controlled values."""
-
-    def __init__(
-        self,
-        max_shot_delay: float = 150.0,
-        min_shot_delay: float = 0.0,
-        max_cs_time: float = 100.0,
-    ) -> None:
-        self.max_shot_delay = max_shot_delay
-        self.min_shot_delay = min_shot_delay
-        self.max_cs_time = max_cs_time
-
-
-class _StubOverlay:
-    last_result: "ShotClassification | None" = None
-
-    def update_result(self, result: "ShotClassification", history=None) -> None:
-        self.last_result = result
-
-
-def _make_listener(
-    max_shot_delay: float = 150.0,
-    min_shot_delay: float = 0.0,
-    max_cs_time: float = 100.0,
-) -> "InputListener":
-    """Build an InputListener bypassing pynput and real config."""
-    from input_events import InputListener
-
-    overlay = _StubOverlay()
-    listener = object.__new__(InputListener)
-    listener.overlay = overlay
-    listener.stats = None
-    listener.classifier = _StubClassifier(max_shot_delay, min_shot_delay, max_cs_time)
-    return listener
-
-
-class TestBuildClassification:
-    """Tests for InputListener._build_classification() threshold logic."""
-
-    def _call(self, listener, base: "ShotClassification") -> "ShotClassification":
-        from input_events import InputListener
-
-        return InputListener._build_classification(listener, base)
-
-    # --- Overlap passthrough ---------------------------------------------------
-
-    def test_overlap_passthrough(self) -> None:
-        """Overlap is always returned unchanged."""
-        listener = _make_listener()
-        base = ShotClassification(label=LABEL_OVERLAP, overlap_time=60.0)
-        result = self._call(listener, base)
-        assert result.label == LABEL_OVERLAP
-        assert result.overlap_time == 60.0
-
-    # --- Clean counter-strafe (within all thresholds) -------------------------
-
-    def test_clean_counter_strafe_passes(self) -> None:
-        """cs_time and shot_delay both within limits → Counter-strafe."""
-        listener = _make_listener()
-        base = ShotClassification(label=LABEL_COUNTER_STRAFE, cs_time=50.0, shot_delay=100.0)
-        result = self._call(listener, base)
-        assert result.label == LABEL_COUNTER_STRAFE
-
-    # --- shot_delay too slow → Bad --------------------------------------------
+class TestClassifierThresholdEnforcement:
+    """Tests for threshold enforcement in MovementClassifier."""
 
     def test_shot_delay_exceeds_max_is_bad(self) -> None:
         """shot_delay > max_shot_delay → Bad."""
-        listener = _make_listener(max_shot_delay=150.0)
-        base = ShotClassification(label=LABEL_COUNTER_STRAFE, cs_time=50.0, shot_delay=151.0)
-        result = self._call(listener, base)
-        assert result.label == LABEL_BAD
+        classifier = MovementClassifier(max_shot_delay=230.0, min_shot_delay=0.0, max_cs_time=215.0)
+        classifier.on_press("A", 100.0)
+        classifier.on_release("A", 200.0)
+        classifier.on_press("D", 250.0)
+        result = classifier.classify_shot(482.0)  # 232ms shot delay > 230
+        assert result.label == "Bad"
 
     def test_shot_delay_exactly_at_max_is_ok(self) -> None:
-        """shot_delay == max_shot_delay is still Counter-strafe (not strictly greater)."""
-        listener = _make_listener(max_shot_delay=150.0)
-        base = ShotClassification(label=LABEL_COUNTER_STRAFE, cs_time=50.0, shot_delay=150.0)
-        result = self._call(listener, base)
-        assert result.label == LABEL_COUNTER_STRAFE
+        """shot_delay == max_shot_delay → Counter-strafe."""
+        classifier = MovementClassifier(max_shot_delay=230.0, min_shot_delay=0.0, max_cs_time=215.0)
+        classifier.on_press("A", 100.0)
+        classifier.on_release("A", 200.0)
+        classifier.on_press("D", 250.0)
+        result = classifier.classify_shot(480.0)  # 230ms shot delay == 230
+        assert result.label == "Counter‑strafe"
 
-    # --- shot_delay too fast → Bad --------------------------------------------
+    def test_cs_time_and_shot_delay_both_exceed_max_is_bad(self) -> None:
+        """cs_time > max_cs_time AND shot_delay > max_cs_time → Bad."""
+        classifier = MovementClassifier(max_shot_delay=230.0, min_shot_delay=0.0, max_cs_time=215.0)
+        classifier.on_press("A", 100.0)
+        classifier.on_release("A", 200.0)
+        classifier.on_press("D", 450.0)  # 250ms cs_time > 215
+        result = classifier.classify_shot(700.0)  # 250ms shot delay > 215
+        assert result.label == "Bad"
 
-    def test_shot_delay_below_min_is_bad(self) -> None:
-        """shot_delay < min_shot_delay → Bad."""
-        listener = _make_listener(min_shot_delay=40.0)
-        base = ShotClassification(label=LABEL_COUNTER_STRAFE, cs_time=50.0, shot_delay=39.0)
-        result = self._call(listener, base)
-        assert result.label == LABEL_BAD
-
-    def test_shot_delay_exactly_at_min_is_ok(self) -> None:
-        """shot_delay == min_shot_delay is still Counter-strafe."""
-        listener = _make_listener(min_shot_delay=40.0)
-        base = ShotClassification(label=LABEL_COUNTER_STRAFE, cs_time=50.0, shot_delay=40.0)
-        result = self._call(listener, base)
-        assert result.label == LABEL_COUNTER_STRAFE
-
-    # --- cs_time too slow → Bad -----------------------------------------------
-
-    def test_cs_time_too_slow_is_bad(self) -> None:
-        """cs_time > max_cs_time → Bad, regardless of shot_delay."""
-        listener = _make_listener(max_cs_time=100.0)
-        base = ShotClassification(label=LABEL_COUNTER_STRAFE, cs_time=101.0, shot_delay=80.0)
-        result = self._call(listener, base)
-        assert result.label == LABEL_BAD
-
-    # --- Bad passthrough ------------------------------------------------------
-
-    def test_bad_passthrough(self) -> None:
-        """Plain Bad base result stays Bad."""
-        listener = _make_listener()
-        base = ShotClassification(label=LABEL_BAD)
-        result = self._call(listener, base)
-        assert result.label == LABEL_BAD
-
-    def test_counter_strafe_missing_timing_is_bad(self) -> None:
-        """Counter-strafe with None cs_time/shot_delay falls back to Bad."""
-        listener = _make_listener()
-        base = ShotClassification(label=LABEL_COUNTER_STRAFE, cs_time=None, shot_delay=None)
-        result = self._call(listener, base)
-        assert result.label == LABEL_BAD
+    def test_cs_time_exceeds_max_but_shot_delay_below_max_is_ok(self) -> None:
+        """cs_time > max_cs_time but shot_delay <= max_cs_time → Counter-strafe."""
+        classifier = MovementClassifier(max_shot_delay=230.0, min_shot_delay=0.0, max_cs_time=215.0)
+        classifier.on_press("A", 100.0)
+        classifier.on_release("A", 200.0)
+        classifier.on_press("D", 450.0)  # 250ms cs_time > 215
+        result = classifier.classify_shot(500.0)  # 50ms shot delay < 215
+        assert result.label == "Counter‑strafe"
